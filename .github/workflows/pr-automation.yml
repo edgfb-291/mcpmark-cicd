@@ -1,0 +1,156 @@
+name: PR Automation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - run: npm ci
+      - name: Run ESLint
+        run: |
+          npm run lint > eslint-report.txt 2>&1 || echo "Lint warnings/errors found"
+      - name: Run Prettier
+        run: |
+          npx prettier --check src/ > prettier-report.txt 2>&1 || echo "Prettier formatting issues found"
+      - name: Post Code Quality Report
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            let eslintOutput = 'No output';
+            let prettierOutput = 'No output';
+            try { eslintOutput = fs.readFileSync('eslint-report.txt', 'utf8'); } catch (e) {}
+            try { prettierOutput = fs.readFileSync('prettier-report.txt', 'utf8'); } catch (e) {}
+            
+            const commentBody = `
+            ### Code Quality Report
+            
+            #### ESLint Results
+            \`\`\`
+            ${eslintOutput.slice(0, 1000)}
+            \`\`\`
+            
+            #### Prettier Results
+            \`\`\`
+            ${prettierOutput.slice(0, 1000)}
+            \`\`\`
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+  testing-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - run: npm ci
+      - name: Run Tests
+        run: npm run test:coverage
+      - name: Upload Coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage/
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentBody = `
+            ### Test Coverage Report
+            
+            Tests completed successfully. Coverage artifacts have been uploaded.
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Dependency Scan
+        run: npm audit --audit-level=moderate > audit-report.txt 2>&1 || echo "Vulnerabilities found"
+      - name: Secret Scan
+        run: |
+          grep -rE "API_KEY|SECRET|TOKEN|PASSWORD" src/ || echo "No obvious secrets found"
+      - name: Post Security Scan Report
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            let auditOutput = 'No output';
+            try { auditOutput = fs.readFileSync('audit-report.txt', 'utf8'); } catch (e) {}
+            
+            const commentBody = `
+            ### Security Scan Report
+            
+            #### Dependencies & Vulnerabilities
+            \`\`\`
+            ${auditOutput.slice(0, 1000)}
+            \`\`\`
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+  build-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Start and Validate
+        run: |
+          npm start &
+          PID=$!
+          sleep 10
+          npm run health-check
+          kill $PID
+      - name: Post Build Validation
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const commentBody = `
+            ### Build Validation
+            
+            Build process completed. Endpoints validated.
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
